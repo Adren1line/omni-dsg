@@ -1,0 +1,13 @@
+{
+  "name": "omni-dsg",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Omni DSG — платформа студии: вход, роли, должности, проекты, файлы",
+  "main": "server.js",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "license": "UNLICENSED"
+}
