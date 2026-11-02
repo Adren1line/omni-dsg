@@ -11,7 +11,7 @@ const app = createApp({
 });
 
 seed(app.db, { adminLogin: env.ADMIN_LOGIN, adminPassword: env.ADMIN_PASSWORD, adminName: env.ADMIN_NAME })
-  .then(() => (env.DEMO === '1' ? require('./src/demo').seedDemo(app.db) : null))
+  .then(() => (env.DEMO === '1' || process.argv.includes('--demo') ? require('./src/demo').seedDemo(app.db) : null))
   .then(() => {
     const port = Number(env.PORT) || 3000;
     app.server.listen(port, env.HOST || '0.0.0.0', () => console.log(`[omni] Omni DSG API слушает порт ${port}`));

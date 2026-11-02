@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
-    "demo": "DEMO=1 node --disable-warning=ExperimentalWarning server.js"
+    "demo": "node --disable-warning=ExperimentalWarning server.js --demo"
   },
   "license": "UNLICENSED"
 }
