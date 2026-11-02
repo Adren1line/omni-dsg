@@ -1,15 +1,20 @@
 # Omni DSG — сервер платформы студии
 
-Этап 1: вход, роли и должности, проекты, файловое хранилище, журнал действий.
+Вход, роли и должности, проекты, файловое хранилище, задачи, заявки, лента объекта, бот и график, журнал действий — и рабочий интерфейс Omni DSG, который всё это показывает.
 Node.js 22 без внешних пакетов, база — встроенный SQLite, файлы — на диске сервера.
+
+Интерфейс открывается по адресу сервера (`public/`: `index.html`, `app.js`, `scene.js`). Он не хранит данные в браузере: при входе получает всё одним запросом `/api/state` с учётом прав, каждое изменение отправляет на сервер. Написан на ES5 — работает и на старых iPhone.
 
 ## Запуск
 
 ```bash
 cp .env.example .env        # при необходимости поправьте
 npm start                   # http://localhost:3000
-npm test                    # 9 сквозных проверок API
+npm test                    # 17 сквозных проверок API
+npm run demo                # то же, что start, но на пустой базе создаст демо-студию
 ```
+
+Демо: люди, четыре объекта, задачи, заявки, сообщения бота и ответы в графике. Логины `director`, `timur`, `dana`, `erlan`, `sergey`, `aigerim` (заказчик), пароль у всех `demo2026`. Демо загружается только в базу без проектов — рабочие данные не затрёт.
 
 При первом запуске создаются шесть стандартных должностей и администратор. Если `ADMIN_PASSWORD` не задан, временный пароль выводится в лог — после входа система попросит его сменить.
 
@@ -73,20 +78,30 @@ docker run -d -p 3000:3000 -v omni-data:/data -e ADMIN_PASSWORD='…' -e COOKIE_
 | GET | /api/projects | вошедший | видимые проекты с командой |
 | GET | /api/projects/:id | участник | проект |
 | POST | /api/projects | admin, director | `{name, address, area, due, leadId, clientId, members[]}` |
-| PATCH | /api/projects/:id | admin/director; stage — право stage | данные проекта, `stage`, `stagePct` |
+| PATCH | /api/projects/:id | admin/director; stage — право stage; деньги — money | данные проекта, `stage`, `stagePct`, `budget`, `paid`, `konturFile`, `plan` |
 | PUT | /api/projects/:id/members | admin, director, team | `{userIds[]}` |
 | GET | /api/projects/:id/files | storage или заказчик | список (заказчику — только открытые) |
 | POST | /api/projects/:id/files | storage | тело — сам файл; заголовок `X-File-Name` (URI-кодированный); `?public=1` при праве pub |
 | GET | /api/files/:id/download | storage или заказчик | скачивание |
 | PATCH | /api/files/:id | pub | `{public}` |
 | DELETE | /api/files/:id | загрузивший, admin, director | удаление |
+| GET | /api/state | вошедший | всё для интерфейса: я, люди, должности, проекты, задачи, файлы, лента, заявки, бот, график — только то, что разрешено |
+| PATCH | /api/me | сотрудник | `{away}` — «уехал на объект» |
+| POST | /api/projects/:id/tasks | tasks | `{text, assigneeId, due}`; исполнитель — из команды проекта |
+| PATCH, DELETE | /api/tasks/:id | исполнитель (`done`) или tasks | `{done, text, due, assigneeId}` |
+| POST, PATCH, DELETE | /api/leads[/:id] | crm | `{name, obj, area, src, status: cold/warm/hot/deal, next, note}` |
+| POST | /api/projects/:id/feed | stage или руководство | запись в ленту объекта; `public` — при праве pub |
+| POST | /api/projects/:id/question | участник, заказчик | вопрос по объекту — попадает боту как «вопрос вам» |
+| POST | /api/projects/:id/updates | сотрудник проекта | отчёт в график `{stage, pct, text}` (позже — от бота) |
+| PUT | /api/bot/config | bot | каналы, что бот делает сам, время опроса, сроки напоминаний |
+| POST, DELETE | /api/bot/train[/:id] | bot | примеры для обучения |
+| POST, PATCH | /api/bot/log[/:id] | bot | записи бота; `POST /api/bot/log/:id/teach {answer}` — научить и закрыть |
 | GET | /api/audit?q= | admin | журнал действий |
 | GET | /api/admin/export[?hashes=1] | admin | выгрузка базы в JSON; хеши паролей — только по флагу |
 
 ## Что дальше
 
-1. Подключить интерфейс Omni DSG (прототип) к этому API вместо хранения в браузере.
-2. API для бота: служебный ключ, опросы сотрудников, флаги, отправка уведомлений в Телеграм/WhatsApp.
-3. Задачи, заявки, график, оплаты — таблицы и маршруты по той же схеме прав.
-4. Хранилище S3 вместо диска, когда файлов станет много (интерфейс уже отделён в `src/storage.js`).
-5. PostgreSQL вместо SQLite — при нескольких серверах или большой нагрузке.
+1. Сам бот: служебный ключ для API, опросы сотрудников по расписанию, флаги, уведомления в Телеграм/WhatsApp.
+2. Размещение: сервер, домен, HTTPS, резервное копирование папки данных.
+3. Хранилище S3 вместо диска, когда файлов станет много (интерфейс уже отделён в `src/storage.js`).
+4. PostgreSQL вместо SQLite — при нескольких серверах или большой нагрузке.

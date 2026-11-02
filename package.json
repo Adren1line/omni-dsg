@@ -4,10 +4,13 @@
   "private": true,
   "description": "Omni DSG — платформа студии: вход, роли, должности, проекты, файлы",
   "main": "server.js",
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "demo": "DEMO=1 node --disable-warning=ExperimentalWarning server.js"
   },
   "license": "UNLICENSED"
 }

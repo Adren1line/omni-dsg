@@ -78,6 +78,64 @@ const MIGRATIONS = [
     ip      TEXT
   );
   CREATE INDEX audit_ts ON audit(ts);
+  `,
+  // 2 — всё, что интерфейс раньше держал в браузере: деньги и план проекта, задачи, заявки, лента, бот
+  `
+  ALTER TABLE projects ADD COLUMN budget INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE projects ADD COLUMN paid INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE projects ADD COLUMN plan TEXT;                 -- JSON: [[начало,конец] × 6 стадий]; пусто — считается от срока
+  ALTER TABLE projects ADD COLUMN kontur_file TEXT;
+  ALTER TABLE users ADD COLUMN away INTEGER NOT NULL DEFAULT 0;
+  CREATE TABLE tasks (
+    id          INTEGER PRIMARY KEY,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    due         TEXT,
+    done        INTEGER NOT NULL DEFAULT 0,
+    created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX tasks_project ON tasks(project_id);
+  CREATE TABLE leads (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    obj        TEXT,
+    area       REAL,
+    src        TEXT,
+    status     TEXT NOT NULL DEFAULT 'cold' CHECK (status IN ('cold','warm','hot','deal')),
+    next       TEXT,
+    note       TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE feed (
+    id         INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    date       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    public     INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+  );
+  CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE bot_log (
+    id         INTEGER PRIMARY KEY,
+    date       TEXT NOT NULL,
+    lvl        TEXT NOT NULL CHECK (lvl IN ('info','warn','bad','acc','q')),
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    done       INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE bot_train (id INTEGER PRIMARY KEY, sit TEXT NOT NULL, ans TEXT NOT NULL);
+  CREATE TABLE bot_updates (
+    id         INTEGER PRIMARY KEY,
+    date       TEXT NOT NULL,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    stage      INTEGER NOT NULL CHECK (stage BETWEEN 0 AND 5),
+    pct        INTEGER NOT NULL CHECK (pct BETWEEN 0 AND 100),
+    src        TEXT,
+    text       TEXT
+  );
   `
 ];
 

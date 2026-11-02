@@ -40,12 +40,29 @@ function createApp(cfg) {
     return v;
   }
   function userExists(id) { return id == null || !!db.prepare('SELECT 1 FROM users WHERE id = ?').get(Number(id)); }
-  function projectView(p) {
-    const members = db.prepare('SELECT u.id, u.name, u.role, u.position_id FROM project_members m JOIN users u ON u.id = m.user_id WHERE m.project_id = ? ORDER BY u.name').all(p.id)
-      .map((u) => { const pos = P.positionOf(db, u); return { id: u.id, name: u.name, role: u.role, position: pos ? pos.name : null, stages: u.role === 'staff' && pos ? pos.stages : [] }; });
-    const name = (id) => { const u = id && db.prepare('SELECT id, name FROM users WHERE id = ?').get(id); return u ? { id: u.id, name: u.name } : null; };
-    return { id: p.id, name: p.name, address: p.address, area: p.area, stage: p.stage, stageName: P.STAGES[p.stage], stagePct: p.stage_pct, due: p.due, lead: name(p.lead_id), client: name(p.client_id), members, createdAt: p.created_at };
+  function projectView(p, viewer) {
+    const members = db.prepare('SELECT u.id, u.name, u.role, u.position_id, u.away FROM project_members m JOIN users u ON u.id = m.user_id WHERE m.project_id = ? ORDER BY u.name').all(p.id)
+      .map((u) => { const pos = P.positionOf(db, u); return { id: u.id, name: u.name, role: u.role, position: pos ? pos.name : null, stages: u.role === 'staff' && pos ? pos.stages : [], away: !!u.away }; });
+    const name = (id) => { const u = id && db.prepare('SELECT id, name, role, position_id FROM users WHERE id = ?').get(id); if (!u) return null; const pos = P.positionOf(db, u); return { id: u.id, name: u.name, position: pos ? pos.name : null }; };
+    const v = { id: p.id, name: p.name, address: p.address, area: p.area, stage: p.stage, stageName: P.STAGES[p.stage], stagePct: p.stage_pct, due: p.due, plan: planOf(p), konturFile: p.kontur_file || null, lead: name(p.lead_id), client: name(p.client_id), members, createdAt: p.created_at };
+    if (viewer && P.can(db, viewer, 'money')) { v.budget = p.budget; v.paid = p.paid; }
+    return v;
   }
+  /** План стадий: сохранённый или рассчитанный назад от срока сдачи по типовой длительности. */
+  const STAGE_WEEKS = [1, 4, 6, 4, 16, 2];
+  function planOf(p) {
+    if (p.plan) { try { const pl = JSON.parse(p.plan); if (Array.isArray(pl) && pl.length === 6) return pl; } catch { /* пересчитаем */ } }
+    if (!p.due || !/^\d{4}-\d{2}-\d{2}$/.test(p.due)) return null;
+    const k = p.area > 150 ? 1.25 : 1; const pl = []; let end = p.due;
+    for (let i = 5; i >= 0; i--) { const d = new Date(end + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - Math.round(STAGE_WEEKS[i] * 7 * k)); const st = d.toISOString().slice(0, 10); pl.unshift([st, end]); end = st; }
+    return pl;
+  }
+  function dateStr(v, field) {
+    if (v == null || v === '') return null;
+    v = String(v).trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(Date.parse(v + 'T00:00:00Z'))) throw new HttpError(400, `Поле «${field}»: дата в виде ГГГГ-ММ-ДД`, 'validation');
+    return v;
+  }
+  function money(v, field) { const n = Math.round(Number(v || 0)); if (!(n >= 0 && n < 1e13)) throw new HttpError(400, `Поле «${field}»: неверная сумма`, 'validation'); return n; }
   function fileView(f) {
     return { id: f.id, projectId: f.project_id, name: f.name, size: f.size, mime: f.mime, sha256: f.sha256, public: !!f.public, uploadedBy: f.uploaded_by, createdAt: f.created_at };
   }
@@ -203,32 +220,41 @@ function createApp(cfg) {
   r.get('/api/projects', (ctx) => {
     const u = need(ctx); const ids = P.visibleProjectIds(db, u);
     const list = ids.length ? db.prepare(`SELECT * FROM projects WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY created_at DESC`).all(...ids) : [];
-    return { projects: list.map(projectView) };
+    return { projects: list.map((p) => projectView(p, u)) };
   });
-  r.get('/api/projects/:id', (ctx) => { need(ctx); return { project: projectView(getProject(ctx, ctx.params.id)) }; });
+  r.get('/api/projects/:id', (ctx) => { need(ctx); return { project: projectView(getProject(ctx, ctx.params.id), ctx.user) }; });
   r.post('/api/projects', async (ctx) => {
     needManager(ctx); const b = await readJson(ctx.req);
     const name = str(b.name, 200, 'Название', true);
     if (!userExists(b.leadId) || !userExists(b.clientId)) throw new HttpError(400, 'Ответственный или заказчик не найден', 'validation');
     const id = tx(db, () => {
-      const pid = db.prepare('INSERT INTO projects(name,address,area,due,lead_id,client_id) VALUES(?,?,?,?,?,?)')
-        .run(name, str(b.address, 300, 'Адрес'), b.area ? Number(b.area) : null, str(b.due, 10, 'Срок'), b.leadId || null, b.clientId || null).lastInsertRowid;
+      const pid = db.prepare('INSERT INTO projects(name,address,area,due,lead_id,client_id,budget,paid,kontur_file) VALUES(?,?,?,?,?,?,?,?,?)')
+        .run(name, str(b.address, 300, 'Адрес'), b.area ? Number(b.area) : null, dateStr(b.due, 'Срок'), b.leadId || null, b.clientId || null, money(b.budget, 'Бюджет'), money(b.paid, 'Оплачено'), str(b.konturFile, 200, 'Модель Контура')).lastInsertRowid;
       (Array.isArray(b.members) ? b.members : []).forEach((m) => { if (userExists(m)) db.prepare('INSERT OR IGNORE INTO project_members VALUES(?,?)').run(pid, Number(m)); });
       if (b.leadId) db.prepare('INSERT OR IGNORE INTO project_members VALUES(?,?)').run(pid, Number(b.leadId));
       return pid;
     });
     audit(ctx, 'Проекты', `Создан проект «${name}»`);
-    return { project: projectView(db.prepare('SELECT * FROM projects WHERE id = ?').get(id)) };
+    return { project: projectView(db.prepare('SELECT * FROM projects WHERE id = ?').get(id), ctx.user) };
   });
   r.patch('/api/projects/:id', async (ctx) => {
     const u = need(ctx); const p = getProject(ctx, ctx.params.id); const b = await readJson(ctx.req);
     const set = {}; const mgr = u.role === 'admin' || u.role === 'director';
-    const general = ['name', 'address', 'area', 'due', 'leadId', 'clientId'].filter((k) => b[k] !== undefined);
+    const general = ['name', 'address', 'area', 'due', 'leadId', 'clientId', 'konturFile', 'plan'].filter((k) => b[k] !== undefined);
     if (general.length && !mgr) throw new HttpError(403, 'Данные проекта меняет администратор или директор', 'forbidden');
+    if ((b.budget !== undefined || b.paid !== undefined) && !(mgr || P.can(db, u, 'money'))) throw new HttpError(403, 'Недостаточно прав: Бюджет и оплаты', 'forbidden');
     if (b.name !== undefined) set.name = str(b.name, 200, 'Название', true);
     if (b.address !== undefined) set.address = str(b.address, 300, 'Адрес');
     if (b.area !== undefined) set.area = b.area ? Number(b.area) : null;
-    if (b.due !== undefined) set.due = str(b.due, 10, 'Срок');
+    if (b.due !== undefined) set.due = dateStr(b.due, 'Срок');
+    if (b.konturFile !== undefined) set.kontur_file = str(b.konturFile, 200, 'Модель Контура');
+    if (b.budget !== undefined) set.budget = money(b.budget, 'Бюджет');
+    if (b.paid !== undefined) set.paid = money(b.paid, 'Оплачено');
+    if (b.plan !== undefined) {
+      if (b.plan === null) set.plan = null;
+      else if (Array.isArray(b.plan) && b.plan.length === 6 && b.plan.every((r) => Array.isArray(r) && r.length === 2)) set.plan = JSON.stringify(b.plan.map((r) => [dateStr(r[0], 'План'), dateStr(r[1], 'План')]));
+      else throw new HttpError(400, 'План — шесть пар дат', 'validation');
+    }
     if (b.leadId !== undefined) { if (!userExists(b.leadId)) throw new HttpError(400, 'Ответственный не найден', 'validation'); set.lead_id = b.leadId || null; }
     if (b.clientId !== undefined) { if (!userExists(b.clientId)) throw new HttpError(400, 'Заказчик не найден', 'validation'); set.client_id = b.clientId || null; }
     if (b.stage !== undefined || b.stagePct !== undefined) {
@@ -242,7 +268,7 @@ function createApp(cfg) {
       const desc = set.stage !== undefined || set.stage_pct !== undefined ? `${P.STAGES[set.stage ?? p.stage]} ${set.stage_pct ?? p.stage_pct}%` : keys.join(', ');
       audit(ctx, 'Проекты', `«${p.name}»: ${desc}`);
     }
-    return { project: projectView(db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id)) };
+    return { project: projectView(db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id), ctx.user) };
   });
   r.put('/api/projects/:id/members', async (ctx) => {
     const u = need(ctx); if (!(u.role === 'admin' || u.role === 'director' || P.can(db, u, 'team'))) throw new HttpError(403, 'Недостаточно прав', 'forbidden');
@@ -250,7 +276,7 @@ function createApp(cfg) {
     const ids = (Array.isArray(b.userIds) ? b.userIds : []).map(Number).filter((id) => userExists(id));
     tx(db, () => { db.prepare('DELETE FROM project_members WHERE project_id = ?').run(p.id); ids.forEach((id) => db.prepare('INSERT OR IGNORE INTO project_members VALUES(?,?)').run(p.id, id)); });
     audit(ctx, 'Проекты', `«${p.name}»: состав команды (${ids.length} чел.)`);
-    return { project: projectView(db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id)) };
+    return { project: projectView(db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id), ctx.user) };
   });
 
   /* ---------- файлы ---------- */
@@ -315,6 +341,9 @@ function createApp(cfg) {
     return { ok: true };
   });
 
+  /* ---------- задачи, заявки, лента, бот, начальное состояние интерфейса ---------- */
+  require('./work').register(r, { db, audit, need, needStaffOrUp, needPerm, needManager, getProject, str, dateStr, projectView, fileView, userExists });
+
   /* ---------- журнал и выгрузка ---------- */
   r.get('/api/audit', (ctx) => {
     needAdmin(ctx); const q = String(ctx.url.searchParams.get('q') || '').trim(); const limit = Math.min(500, Number(ctx.url.searchParams.get('limit')) || 200);
@@ -331,7 +360,10 @@ function createApp(cfg) {
       app: 'Omni DSG', schema: Number(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get().value), exported: new Date().toISOString(), passwordHashes: withHashes,
       positions: db.prepare('SELECT * FROM positions').all(), users,
       projects: db.prepare('SELECT * FROM projects').all(), projectMembers: db.prepare('SELECT * FROM project_members').all(),
-      files: db.prepare('SELECT * FROM files').all(), audit: db.prepare('SELECT * FROM audit ORDER BY id').all()
+      files: db.prepare('SELECT * FROM files').all(),
+      tasks: db.prepare('SELECT * FROM tasks').all(), leads: db.prepare('SELECT * FROM leads').all(), feed: db.prepare('SELECT * FROM feed').all(),
+      bot: { config: db.prepare('SELECT * FROM kv').all(), log: db.prepare('SELECT * FROM bot_log').all(), train: db.prepare('SELECT * FROM bot_train').all(), updates: db.prepare('SELECT * FROM bot_updates').all() },
+      audit: db.prepare('SELECT * FROM audit ORDER BY id').all()
     };
     audit(ctx, 'Данные', `Выгружена копия базы${withHashes ? ' с хешами паролей' : ''}`);
     ctx.res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="omni-backup-${dump.exported.slice(0, 10)}.json"`, 'Cache-Control': 'no-store' });
@@ -341,6 +373,8 @@ function createApp(cfg) {
 
   /* ---------- статика (будущий интерфейс) ---------- */
   const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
+  // Скрипты только свои, без inline: даже если в данные попадёт разметка, выполниться она не сможет.
+  const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'";
   function serveStatic(req, res, pathname) {
     const root = path.resolve(config.publicDir);
     let rel; try { rel = decodeURIComponent(pathname); } catch { res.writeHead(400); return res.end(); }
@@ -348,7 +382,9 @@ function createApp(cfg) {
     if (file !== root && !file.startsWith(root + path.sep)) { res.writeHead(403); return res.end(); }
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(root, 'index.html');
     if (!fs.existsSync(file)) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'SAMEORIGIN' });
+    const headers = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'SAMEORIGIN', 'Cache-Control': 'no-cache' };
+    if (path.extname(file) === '.html') headers['Content-Security-Policy'] = CSP;
+    res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
   }
 
